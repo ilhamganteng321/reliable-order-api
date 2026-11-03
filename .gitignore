@@ -2,3 +2,4 @@ node_modules/
 dist/
 .env
 coverage/
+load-tests/results.json
