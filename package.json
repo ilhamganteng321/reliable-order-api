@@ -8,7 +8,9 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "load:test": "k6 run load-tests/order-load.js",
+    "load:test:json": "k6 run --out json=load-tests/results.json load-tests/order-load.js"
   },
   "keywords": [],
   "author": "",
