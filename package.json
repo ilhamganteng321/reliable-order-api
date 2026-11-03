@@ -8,7 +8,9 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "load:test": "k6 run load-tests/order-load.js",
+    "load:test:json": "k6 run --out json=load-tests/results.json load-tests/order-load.js"
   },
   "keywords": [],
   "author": "",
@@ -26,6 +28,8 @@
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
     "mysql2": "^3.24.6",
+    "pino": "^10.4.0",
+    "pino-http": "^11.0.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

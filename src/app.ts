@@ -4,11 +4,42 @@ import productsRouter from "./routes/products.ruotes.js";
 import ordersRouter from "./routes/orders.ruotes.js";
 import { apiReference } from "@scalar/express-api-reference";
 import { openApiDocument } from "./docs/openapi.js";
+import { pinoHttp } from "pino-http";
+import { logger } from "./utils/logger.js";
+import { requestContext, getRequestId } from "./middleware/request-context.js";
 
 export const app = express();
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "100kb" }));
+
+// Generate request ID terlebih dahulu
+app.use(requestContext);
+
+// HTTP request logging
+app.use(
+  pinoHttp({
+    logger,
+
+    customProps(req) {
+      return {
+        requestId: req.requestId,
+      };
+    },
+
+    customLogLevel(_req, res, err) {
+      if (err || res.statusCode >= 500) {
+        return "error";
+      }
+
+      if (res.statusCode >= 400) {
+        return "warn";
+      }
+
+      return "info";
+    },
+  }),
+);
 
 // OpenAPI JSON specification
 app.get("/openapi.json", (_req, res) => {
@@ -42,7 +73,10 @@ app.get("/health/db", async (_req, res) => {
       database: "connected",
     });
   } catch (error) {
-    console.error("Database health check failed:", error);
+    logger.error(
+      { err: error, requestId: getRequestId() },
+      "Database health check failed",
+    );
 
     res.status(503).json({
       success: false,
@@ -82,8 +116,14 @@ app.use(
   },
 );
 
-const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
-  console.error("Unhandled API error:", error);
+const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
+  logger.error(
+    {
+      err,
+      requestId: getRequestId(),
+    },
+    "Unhandled application error",
+  );
 
   if (res.headersSent) {
     return;
@@ -93,7 +133,7 @@ const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
     success: false,
     error: {
       code: "INTERNAL_SERVER_ERROR",
-      message: "An unexpected error occurred.",
+      message: "Internal server error",
     },
   });
 };

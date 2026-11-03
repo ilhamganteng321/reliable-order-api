@@ -4,6 +4,9 @@ import type { RowDataPacket, ResultSetHeader } from "mysql2";
 import type { PoolConnection } from "mysql2/promise";
 import { z } from "zod";
 import { pool } from "../config/database.js";
+import { logger } from "../utils/logger.js";
+import { getRequestId } from "../middleware/request-context.js";
+import { withTransactionRetry } from "../utils/with-transaction-retry.js";
 
 const router = Router();
 
@@ -71,6 +74,11 @@ function sendStoredResponse(
     return;
   }
 
+  logger.info(
+    { requestId: getRequestId() },
+    "Returning stored idempotent response",
+  );
+
   let responseBody = row.response_body;
   if (typeof responseBody === "string") {
     try {
@@ -96,6 +104,16 @@ async function findIdempotencyKey(
 
   return rows[0];
 }
+
+class RouteError extends Error {
+  constructor(
+    public statusCode: number,
+    public body: unknown,
+  ) {
+    super("RouteError");
+  }
+}
+
 router.post("/", async (req, res, next) => {
   const parsed = orderSchema.safeParse(req.body);
 
@@ -131,27 +149,16 @@ router.post("/", async (req, res, next) => {
   const { productId, quantity } = parsed.data;
   const requestHash = getRequestHash(productId, quantity);
 
-  let connection: PoolConnection | undefined;
-  let transactionStarted = false;
-  let insertingIdempotencyKey = false;
-
   try {
-    connection = await pool.getConnection();
-    await connection.beginTransaction();
-    transactionStarted = true;
-
-    // Claim this key. A concurrent duplicate waits for the
-    // unique constraint to be resolved by the first transaction.
-    insertingIdempotencyKey = true;
-
-    await connection.execute(
-      `INSERT INTO idempotency_keys
-         (\`key\`, request_hash, status)
-       VALUES (?, ?, 'processing')`,
-      [keyHeader, requestHash],
-    );
-
-    insertingIdempotencyKey = false;
+    const result = await withTransactionRetry(async (connection) => {
+      // Claim this key. A concurrent duplicate waits for the
+      // unique constraint to be resolved by the first transaction.
+      await connection.execute(
+        `INSERT INTO idempotency_keys
+           (\`key\`, request_hash, status)
+         VALUES (?, ?, 'processing')`,
+        [keyHeader, requestHash],
+      );
 
     // Lock the product row so its price and stock are consistent
     // throughout this transaction.
@@ -166,17 +173,13 @@ router.post("/", async (req, res, next) => {
     const product = products[0];
 
     if (!product) {
-      await connection.rollback();
-      transactionStarted = false;
-
-      res.status(404).json({
+      throw new RouteError(404, {
         success: false,
         error: {
           code: "PRODUCT_NOT_FOUND",
           message: "Product does not exist.",
         },
       });
-      return;
     }
 
     // Atomic deduction: MySQL only deducts if sufficient stock
@@ -190,17 +193,22 @@ router.post("/", async (req, res, next) => {
     );
 
     if (deduction.affectedRows !== 1) {
-      await connection.rollback();
-      transactionStarted = false;
+      logger.warn(
+        {
+          requestId: getRequestId(),
+          productId,
+          quantity,
+        },
+        "Order rejected due to insufficient stock",
+      );
 
-      res.status(409).json({
+      throw new RouteError(409, {
         success: false,
         error: {
           code: "INSUFFICIENT_STOCK",
           message: "Not enough stock to complete this order.",
         },
       });
-      return;
     }
 
     // Calculate the total in MySQL DECIMAL arithmetic rather
@@ -240,6 +248,17 @@ router.post("/", async (req, res, next) => {
       },
     };
 
+    logger.info(
+      {
+        requestId: getRequestId(),
+        orderId,
+        productId,
+        quantity,
+        total,
+      },
+      "Order created successfully",
+    );
+
     // Store the exact successful response for retries.
     await connection.execute(
       `UPDATE idempotency_keys
@@ -251,23 +270,17 @@ router.post("/", async (req, res, next) => {
       [JSON.stringify(responseBody), orderId, keyHeader],
     );
 
-    await connection.commit();
-    transactionStarted = false;
+    return { status: 201, body: responseBody };
+    });
 
-    res.status(201).json(responseBody);
+    res.status(result.status).json(result.body);
   } catch (error) {
-    if (transactionStarted && connection) {
-      try {
-        await connection.rollback();
-        transactionStarted = false;
-      } catch (rollbackError) {
-        console.error("Transaction rollback failed:", rollbackError);
-      }
+    if (error instanceof RouteError) {
+      res.status(error.statusCode).json(error.body);
+      return;
     }
 
-    // Only treat duplicate-key errors from the idempotency INSERT
-    // as a possible retry. Other errors must remain server errors.
-    if (insertingIdempotencyKey && getErrorCode(error) === "ER_DUP_ENTRY") {
+    if (getErrorCode(error) === "ER_DUP_ENTRY") {
       try {
         const existing = await findIdempotencyKey(keyHeader);
 
@@ -302,11 +315,17 @@ router.post("/", async (req, res, next) => {
       }
     }
 
-    console.error("Unhandled API error:", error);
+    logger.error(
+      {
+        err: error,
+        requestId: getRequestId(),
+        productId,
+        quantity,
+      },
+      "Order transaction failed",
+    );
 
     next(error);
-  } finally {
-    connection?.release();
   }
 });
 
