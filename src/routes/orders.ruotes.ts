@@ -4,6 +4,8 @@ import type { RowDataPacket, ResultSetHeader } from "mysql2";
 import type { PoolConnection } from "mysql2/promise";
 import { z } from "zod";
 import { pool } from "../config/database.js";
+import { logger } from "../utils/logger.js";
+import { getRequestId } from "../middleware/request-context.js";
 
 const router = Router();
 
@@ -70,6 +72,11 @@ function sendStoredResponse(
     });
     return;
   }
+
+  logger.info(
+    { requestId: getRequestId() },
+    "Returning stored idempotent response",
+  );
 
   let responseBody = row.response_body;
   if (typeof responseBody === "string") {
@@ -193,6 +200,15 @@ router.post("/", async (req, res, next) => {
       await connection.rollback();
       transactionStarted = false;
 
+      logger.warn(
+        {
+          requestId: getRequestId(),
+          productId,
+          quantity,
+        },
+        "Order rejected due to insufficient stock",
+      );
+
       res.status(409).json({
         success: false,
         error: {
@@ -240,6 +256,17 @@ router.post("/", async (req, res, next) => {
       },
     };
 
+    logger.info(
+      {
+        requestId: getRequestId(),
+        orderId,
+        productId,
+        quantity,
+        total,
+      },
+      "Order created successfully",
+    );
+
     // Store the exact successful response for retries.
     await connection.execute(
       `UPDATE idempotency_keys
@@ -261,7 +288,10 @@ router.post("/", async (req, res, next) => {
         await connection.rollback();
         transactionStarted = false;
       } catch (rollbackError) {
-        console.error("Transaction rollback failed:", rollbackError);
+        logger.error(
+          { err: rollbackError, requestId: getRequestId() },
+          "Transaction rollback failed",
+        );
       }
     }
 
@@ -302,7 +332,15 @@ router.post("/", async (req, res, next) => {
       }
     }
 
-    console.error("Unhandled API error:", error);
+    logger.error(
+      {
+        err: error,
+        requestId: getRequestId(),
+        productId,
+        quantity,
+      },
+      "Order transaction failed",
+    );
 
     next(error);
   } finally {

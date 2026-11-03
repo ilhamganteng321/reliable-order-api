@@ -159,3 +159,18 @@ describe("POST /api/orders", () => {
     expect(rows).toHaveLength(0);
   });
 });
+
+describe("Request ID", () => {
+  it("should return a unique request ID", async () => {
+    const firstResponse = await request(app).get("/health");
+    const secondResponse = await request(app).get("/health");
+
+    const firstRequestId = firstResponse.headers["x-request-id"];
+    const secondRequestId = secondResponse.headers["x-request-id"];
+
+    expect(firstRequestId).toBeDefined();
+    expect(secondRequestId).toBeDefined();
+
+    expect(firstRequestId).not.toBe(secondRequestId);
+  });
+});
