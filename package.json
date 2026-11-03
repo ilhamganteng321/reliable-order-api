@@ -22,6 +22,7 @@
   },
   "type": "module",
   "dependencies": {
+    "@scalar/express-api-reference": "^0.10.34",
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
     "mysql2": "^3.24.6",

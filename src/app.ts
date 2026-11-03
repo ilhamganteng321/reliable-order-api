@@ -2,11 +2,29 @@ import express, { type ErrorRequestHandler } from "express";
 import { pool } from "./config/database.js";
 import productsRouter from "./routes/products.ruotes.js";
 import ordersRouter from "./routes/orders.ruotes.js";
+import { apiReference } from "@scalar/express-api-reference";
+import { openApiDocument } from "./docs/openapi.js";
 
 export const app = express();
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "100kb" }));
+
+// OpenAPI JSON specification
+app.get("/openapi.json", (_req, res) => {
+  res.status(200).json(openApiDocument);
+});
+
+// Scalar API Reference
+app.use(
+  "/api-docs",
+  apiReference({
+    content: openApiDocument,
+    theme: "default",
+    darkMode: true,
+    pageTitle: "Reliable Order API Documentation",
+  }),
+);
 
 app.get("/health", (_req, res) => {
   res.status(200).json({
